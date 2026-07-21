@@ -1,0 +1,11 @@
+node_modules/
+dist/
+logs/
+.env
+.wwebjs_auth/
+.wwebjs_cache/
+bookings.json
+qr.png
+debug.png
+debug2.png
+*.tsbuildinfo
