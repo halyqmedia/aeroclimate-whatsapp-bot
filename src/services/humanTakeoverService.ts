@@ -22,25 +22,39 @@ export function isBotPausedForChat(chatId: string): boolean {
 // салыстырамыз. msg.reply() қайтаратын Message объектісіне (демек оның id-іне)
 // сенуге болмайды — whatsapp-web.js кейде хабарлама сәтті жіберілсе де осы
 // объектіні undefined етіп қайтарады (кітапхананың ішкі race condition-ы).
+//
+// Бір чатқа қатар бірнеше жауап дайын болуы мүмкін (клиент кетінен бірнеше
+// хабарлама жазса, әр хабарлама параллель өңделеді) — сол себепті чат басына
+// бір емес, кезек (массив) сақтаймыз, әйтпесе екінші жауап біріншісінің
+// жазбасын үстінен басып жазып, оны "маман жауабы" қылып көрсетіп қояды.
 interface PendingBotReply {
   text: string;
   expiresAt: number;
 }
 
-const pendingBotReplyByChat = new Map<string, PendingBotReply>();
-const PENDING_TTL_MS = 15_000;
+const pendingBotRepliesByChat = new Map<string, PendingBotReply[]>();
+const PENDING_TTL_MS = 30_000;
 
 export function markBotIsReplying(chatId: string, text: string): void {
-  pendingBotReplyByChat.set(chatId, { text, expiresAt: Date.now() + PENDING_TTL_MS });
+  const list = pendingBotRepliesByChat.get(chatId) ?? [];
+  list.push({ text, expiresAt: Date.now() + PENDING_TTL_MS });
+  pendingBotRepliesByChat.set(chatId, list);
 }
 
 export function consumeIfBotReply(chatId: string, text: string): boolean {
-  const pending = pendingBotReplyByChat.get(chatId);
-  if (!pending || Date.now() >= pending.expiresAt) {
-    pendingBotReplyByChat.delete(chatId);
-    return false;
+  const list = pendingBotRepliesByChat.get(chatId);
+  if (!list) return false;
+
+  const now = Date.now();
+  const fresh = list.filter((p) => p.expiresAt > now);
+  const index = fresh.findIndex((p) => p.text === text);
+  const matched = index !== -1;
+  if (matched) fresh.splice(index, 1);
+
+  if (fresh.length > 0) {
+    pendingBotRepliesByChat.set(chatId, fresh);
+  } else {
+    pendingBotRepliesByChat.delete(chatId);
   }
-  if (pending.text !== text) return false;
-  pendingBotReplyByChat.delete(chatId);
-  return true;
+  return matched;
 }
