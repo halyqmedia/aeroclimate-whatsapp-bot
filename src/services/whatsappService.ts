@@ -5,38 +5,75 @@ import QRCode from "qrcode";
 import { transcribeVoiceMessage } from "./transcriptionService";
 import { handleIncomingMessage } from "./messageService";
 import { logInfo, logError } from "../utils/logger";
+import { env } from "../config/env";
+import { setLatestQr, setReady, setDisconnected } from "./webServer";
+import {
+  pauseBotForChat,
+  isBotPausedForChat,
+  markAsBotMessage,
+  isBotMessage,
+} from "./humanTakeoverService";
 
 export function startWhatsAppClient(): void {
   const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({ dataPath: path.join(env.storageDir, ".wwebjs_auth") }),
     puppeteer: {
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
+    ...(env.whatsappPhoneNumber
+      ? { pairWithPhoneNumber: { phoneNumber: env.whatsappPhoneNumber, showNotification: true } }
+      : {}),
   });
 
   client.on("qr", async (qr) => {
     logInfo("Отсканируйте этот QR-код в WhatsApp (Связанные устройства):");
     qrcodeTerminal.generate(qr, { small: true });
-    await QRCode.toFile(path.join(__dirname, "..", "..", "qr.png"), qr);
+    await QRCode.toFile(path.join(env.storageDir, "qr.png"), qr);
     logInfo("QR-код также сохранён как qr.png");
+    setLatestQr(qr);
+  });
+
+  client.on("code", (code) => {
+    logInfo(`Код байланыстыру (WhatsApp → Байланысу коды арқылы құрылғы қосу): ${code}`);
   });
 
   client.on("ready", () => {
     logInfo("Бот запущен и готов отвечать клиентам!");
+    setReady();
   });
 
   client.on("disconnected", (reason) => {
     logError("WhatsApp-сессия отключена", reason);
+    setDisconnected();
   });
 
   client.on("auth_failure", (msg) => {
     logError("Ошибка авторизации WhatsApp", msg);
   });
 
+  // Маман өзі WhatsApp-тан жауап жазса (fromMe, боттың өз хабарламасы емес),
+  // сол чат үшін ботты уақытша тоқтатамыз — клиентпен маман тікелей сөйлесіп жатыр.
+  client.on("message_create", (msg: Message) => {
+    if (!msg.fromMe) return;
+    const chatId = msg.id.remote;
+    if (chatId.includes("@g.us") || chatId === "status@broadcast") return;
+
+    setTimeout(() => {
+      if (isBotMessage(msg.id._serialized)) return;
+      pauseBotForChat(chatId);
+      logInfo(`Маман ${chatId} чатына өзі жауап берді, бот уақытша тоқтатылды`);
+    }, 500);
+  });
+
   client.on("message", async (msg: Message) => {
     logInfo(`Получено сообщение от ${msg.from}: type=${msg.type} body="${msg.body}"`);
     if (msg.from.includes("@g.us") || msg.from === "status@broadcast") return;
+
+    if (isBotPausedForChat(msg.from)) {
+      logInfo(`Бот ${msg.from} үшін тоқтатылған, хабарлама өткізіп жіберілді`);
+      return;
+    }
 
     const isVoiceMessage = msg.hasMedia && (msg.type === "ptt" || msg.type === "audio");
     if (!msg.body && !isVoiceMessage) return;
@@ -65,13 +102,15 @@ export function startWhatsAppClient(): void {
       if (!userText) return;
 
       const reply = await handleIncomingMessage(msg.from, userText);
-      await msg.reply(reply);
+      const sentMessage = await msg.reply(reply);
+      markAsBotMessage(sentMessage.id._serialized);
     } catch (error) {
       logError("Ошибка обработки сообщения", error);
-      await msg.reply(
+      const sentMessage = await msg.reply(
         "Извините, у меня небольшая техническая заминка. Менеджер скоро свяжется с вами напрямую 🙏\n" +
           "Кешіріңіз, шағын техникалық ақау болды. Менеджер жақын арада сізбен тікелей байланысады 🙏"
       );
+      markAsBotMessage(sentMessage.id._serialized);
     }
   });
 

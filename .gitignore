@@ -9,3 +9,4 @@ qr.png
 debug.png
 debug2.png
 *.tsbuildinfo
+.claude/settings.local.json

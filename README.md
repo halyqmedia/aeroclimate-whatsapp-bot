@@ -12,7 +12,7 @@ Router → Cache → Claude тізбегі, қысқартылған конте�
 - **Cache** — диалогтың бірінші сұрағы қайталанса, Claude қайта шақырылмайды (TTL 24 сағат)
 - **Rate limit** — 1 пайдаланушы 30 секундта 10-нан көп сұрау жіберсе, күте тұруды сұрайды
 - **Token/Cost logging** — әр Claude сұранысынан кейін input/output токен және $ баға логталады (`logs/requests.log`)
-- **Provider interface** — Claude қазір қосулы, келешекте OpenAI/Gemini қосу үшін интерфейс дайын
+- **Provider interface** — Gemini қазір қосулы (Claude/OpenAI да интерфейс арқылы қолжетімді)
 - WhatsApp қосылымы (QR), дауыстық хабарламаны Whisper арқылы тану, буки (тапсырыс) сақтау — бұрынғы MVP-дегідей сақталды
 
 ## Неге "Сәлем" Router-де жоқ
@@ -36,7 +36,7 @@ Router → Cache → Claude тізбегі, қысқартылған конте�
 
 ```bash
 npm install
-cp .env.example .env   # ANTHROPIC_API_KEY, OPENAI_API_KEY толтырыңыз
+cp .env.example .env   # GEMINI_API_KEY, OPENAI_API_KEY (Whisper үшін) толтырыңыз
 npm run build
 npm start
 ```
@@ -51,12 +51,13 @@ npm run dev
 
 | Айнымалы | Сипаттама | Әдепкі |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Claude API кілті (міндетті) | — |
-| `OPENAI_API_KEY` | Whisper (дауыстық хабарлама) үшін | — |
-| `AI_PROVIDER` | `claude` \| `openai` \| `gemini` | `claude` |
-| `MODEL` | Claude моделі | `claude-sonnet-4-6` |
+| `GEMINI_API_KEY` | Gemini API кілті (AI_PROVIDER=gemini кезінде міндетті) | — |
+| `ANTHROPIC_API_KEY` | Claude API кілті (AI_PROVIDER=claude кезінде міндетті) | — |
+| `OPENAI_API_KEY` | Whisper (дауыстық хабарлама) үшін әрқашан керек | — |
+| `AI_PROVIDER` | `gemini` \| `claude` \| `openai` | `gemini` |
+| `MODEL` | Таңдалған провайдердің моделі | `gemini-2.5-flash` |
 | `MAX_TOKENS` | Жауаптың максимал ұзындығы | `500` |
-| `TEMPERATURE` | Claude температурасы | `1` |
+| `TEMPERATURE` | Модель температурасы | `1` |
 | `CACHE_TTL` | Кэш өмірі, секунд | `86400` (24 сағ) |
 
 ## Папка құрылымы
@@ -76,9 +77,11 @@ logs/          requests.log — әр сұраныстың логы (JSON lines)
 
 ## Провайдерді ауыстыру
 
-`AI_PROVIDER=openai` немесе `AI_PROVIDER=gemini` қойып, `src/api/openaiProvider.ts` /
-`geminiProvider.ts` ішінде `generateReply`-ды нақты SDK шақыруымен толтырыңыз — қалған код
-өзгермейді, себебі бәрі `AiProvider` интерфейсі арқылы жұмыс істейді.
+Қазір `AI_PROVIDER=gemini` (`src/api/geminiProvider.ts`, `@google/genai` SDK). Claude-ге
+қайту үшін `.env`-де `AI_PROVIDER=claude` қойыңыз — `ClaudeProvider` дайын тұр. OpenAI үшін
+`AI_PROVIDER=openai` қойып, `src/api/openaiProvider.ts` ішінде `generateReply`-ды толтыру
+керек (әзірге заглушка). Қалған код өзгермейді, себебі бәрі `AiProvider` интерфейсі арқылы
+жұмыс істейді.
 
 ## Қайда буки (тапсырыс) сақталады
 

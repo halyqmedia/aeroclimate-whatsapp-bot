@@ -39,7 +39,24 @@ async function summarizeOldMessages(
 const aiProvider: AiProvider = createAiProvider();
 const memory = new ConversationMemory(summarizeOldMessages);
 
-function buildClaudeMessages(chatId: string, userText: string) {
+// Пайдаланушы осы диалогта дәл сол сұрақты бұрын қойған ба — солай болса,
+// AI-ды қайта шақырмай, бұрынғы жауапты қайтарамыз (тек осы chatId ішінде
+// ізделеді, сондықтан басқа клиенттің аты/қаласы кездейсоқ ағып кетпейді).
+function findRepeatedAnswer(recent: ChatMessage[], userText: string): string | null {
+  const normalized = userText.trim().toLowerCase();
+  for (let i = 0; i < recent.length - 1; i++) {
+    if (
+      recent[i].role === "user" &&
+      recent[i].content.trim().toLowerCase() === normalized &&
+      recent[i + 1].role === "assistant"
+    ) {
+      return recent[i + 1].content;
+    }
+  }
+  return null;
+}
+
+function buildAiMessages(chatId: string, userText: string) {
   const { summary, recent } = memory.getContext(chatId);
   const messages: ChatMessage[] = [];
 
@@ -58,15 +75,22 @@ export async function handleIncomingMessage(chatId: string, userText: string): P
     return RATE_LIMIT_REPLY;
   }
 
-  // 1. Router — простые категории без обращения к Claude
+  // 1. Router — простые категории без обращения к AI-провайдеру
   const routed = routeMessage(userText);
   if (routed) {
     await memory.addTurn(chatId, userText, routed.answer);
     return routed.answer;
   }
 
-  // 2. Кэш — если такой же вопрос уже задавали в начале диалога
+  // 2. Осы диалогтағы тура қайталама сұрақ — бұрынғы жауапты қайталаймыз
   const { recent } = memory.getContext(chatId);
+  const repeated = findRepeatedAnswer(recent, userText);
+  if (repeated) {
+    await memory.addTurn(chatId, userText, repeated);
+    return repeated;
+  }
+
+  // 3. Кэш — если такой же вопрос уже задавали в начале диалога
   const cacheKey = `q:${userText.trim().toLowerCase()}`;
   if (recent.length === 0) {
     const cached = await cache.get(cacheKey);
@@ -76,11 +100,11 @@ export async function handleIncomingMessage(chatId: string, userText: string): P
     }
   }
 
-  // 3. Claude — только если предыдущие шаги не дали ответа
+  // 4. AI-провайдер — только если предыдущие шаги не дали ответа
   const conversationId = randomUUID();
   const startedAt = Date.now();
   try {
-    const messages = buildClaudeMessages(chatId, userText);
+    const messages = buildAiMessages(chatId, userText);
     const result = await aiProvider.generateReply({
       systemPrompt: buildSystemPrompt(),
       messages,

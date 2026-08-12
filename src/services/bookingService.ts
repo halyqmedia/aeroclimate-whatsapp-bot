@@ -1,8 +1,9 @@
 import fs from "fs";
 import path from "path";
 import { logInfo } from "../utils/logger";
+import { env } from "../config/env";
 
-const BOOKINGS_FILE = path.join(__dirname, "..", "..", "bookings.json");
+const BOOKINGS_FILE = path.join(env.storageDir, "bookings.json");
 if (!fs.existsSync(BOOKINGS_FILE)) fs.writeFileSync(BOOKINGS_FILE, "[]");
 
 interface Booking {
