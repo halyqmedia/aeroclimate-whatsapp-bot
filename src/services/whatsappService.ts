@@ -10,9 +10,17 @@ import { setLatestQr, setReady, setDisconnected } from "./webServer";
 import {
   pauseBotForChat,
   isBotPausedForChat,
-  markAsBotMessage,
-  isBotMessage,
+  markBotIsReplying,
+  consumeIfBotReply,
 } from "./humanTakeoverService";
+
+const VOICE_DOWNLOAD_FAILED_REPLY =
+  "Извините, не удалось скачать голосовое сообщение, напишите, пожалуйста, текстом 🙏\n" +
+  "Кешіріңіз, дауыстық хабарламаны жүктей алмадым, жазбаша жазып жіберіңізші 🙏";
+
+const ERROR_REPLY =
+  "Извините, у меня небольшая техническая заминка. Менеджер скоро свяжется с вами напрямую 🙏\n" +
+  "Кешіріңіз, шағын техникалық ақау болды. Менеджер жақын арада сізбен тікелей байланысады 🙏";
 
 export function startWhatsAppClient(): void {
   const client = new Client({
@@ -59,11 +67,10 @@ export function startWhatsAppClient(): void {
     const chatId = msg.id.remote;
     if (chatId.includes("@g.us") || chatId === "status@broadcast") return;
 
-    setTimeout(() => {
-      if (isBotMessage(msg.id._serialized)) return;
-      pauseBotForChat(chatId);
-      logInfo(`Маман ${chatId} чатына өзі жауап берді, бот уақытша тоқтатылды`);
-    }, 500);
+    if (consumeIfBotReply(chatId, msg.body)) return;
+
+    pauseBotForChat(chatId);
+    logInfo(`Маман ${chatId} чатына өзі жауап берді, бот уақытша тоқтатылды`);
   });
 
   client.on("message", async (msg: Message) => {
@@ -89,10 +96,8 @@ export function startWhatsAppClient(): void {
           logError("Не удалось скачать голосовое сообщение", error);
         }
         if (!media) {
-          await msg.reply(
-            "Извините, не удалось скачать голосовое сообщение, напишите, пожалуйста, текстом 🙏\n" +
-              "Кешіріңіз, дауыстық хабарламаны жүктей алмадым, жазбаша жазып жіберіңізші 🙏"
-          );
+          markBotIsReplying(msg.from, VOICE_DOWNLOAD_FAILED_REPLY);
+          await msg.reply(VOICE_DOWNLOAD_FAILED_REPLY);
           return;
         }
         userText = await transcribeVoiceMessage(media);
@@ -102,15 +107,12 @@ export function startWhatsAppClient(): void {
       if (!userText) return;
 
       const reply = await handleIncomingMessage(msg.from, userText);
-      const sentMessage = await msg.reply(reply);
-      markAsBotMessage(sentMessage.id._serialized);
+      markBotIsReplying(msg.from, reply);
+      await msg.reply(reply);
     } catch (error) {
       logError("Ошибка обработки сообщения", error);
-      const sentMessage = await msg.reply(
-        "Извините, у меня небольшая техническая заминка. Менеджер скоро свяжется с вами напрямую 🙏\n" +
-          "Кешіріңіз, шағын техникалық ақау болды. Менеджер жақын арада сізбен тікелей байланысады 🙏"
-      );
-      markAsBotMessage(sentMessage.id._serialized);
+      markBotIsReplying(msg.from, ERROR_REPLY);
+      await msg.reply(ERROR_REPLY);
     }
   });
 

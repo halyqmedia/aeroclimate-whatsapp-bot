@@ -18,15 +18,29 @@ export function isBotPausedForChat(chatId: string): boolean {
   return true;
 }
 
-// Боттың өз жауаптарын маманның хабарламасынан ажырату үшін жіберілген
-// хабарлама ID-ларын қысқа уақытқа есте сақтаймыз.
-const botSentMessageIds = new Set<string>();
-
-export function markAsBotMessage(messageId: string): void {
-  botSentMessageIds.add(messageId);
-  setTimeout(() => botSentMessageIds.delete(messageId), 60_000);
+// Боттың өз жауаптарын маманның хабарламасынан ажырату үшін chatId+мәтін бойынша
+// салыстырамыз. msg.reply() қайтаратын Message объектісіне (демек оның id-іне)
+// сенуге болмайды — whatsapp-web.js кейде хабарлама сәтті жіберілсе де осы
+// объектіні undefined етіп қайтарады (кітапхананың ішкі race condition-ы).
+interface PendingBotReply {
+  text: string;
+  expiresAt: number;
 }
 
-export function isBotMessage(messageId: string): boolean {
-  return botSentMessageIds.has(messageId);
+const pendingBotReplyByChat = new Map<string, PendingBotReply>();
+const PENDING_TTL_MS = 15_000;
+
+export function markBotIsReplying(chatId: string, text: string): void {
+  pendingBotReplyByChat.set(chatId, { text, expiresAt: Date.now() + PENDING_TTL_MS });
+}
+
+export function consumeIfBotReply(chatId: string, text: string): boolean {
+  const pending = pendingBotReplyByChat.get(chatId);
+  if (!pending || Date.now() >= pending.expiresAt) {
+    pendingBotReplyByChat.delete(chatId);
+    return false;
+  }
+  if (pending.text !== text) return false;
+  pendingBotReplyByChat.delete(chatId);
+  return true;
 }
