@@ -62,15 +62,33 @@ export function startWhatsAppClient(): void {
 
   // Маман өзі WhatsApp-тан жауап жазса (fromMe, боттың өз хабарламасы емес),
   // сол чат үшін ботты уақытша тоқтатамыз — клиентпен маман тікелей сөйлесіп жатыр.
+  // Тек нақты жазылған хабарлама түрлеріне ғана қараймыз: жарнамадан (Facebook/
+  // Instagram) келген жаңа лидтерде WhatsApp өзі notification_template/protocol
+  // сияқты жүйелік хабарламаны fromMe=true етіп белгілейді — бұл адам жазған
+  // хабарлама емес, сондықтан ескермейміз (әйтпесе бот жаңа лидке бір рет те
+  // жауап бермей тұрып өзін-өзі тоқтатып тастайды).
+  const REAL_MESSAGE_TYPES = new Set([
+    "chat",
+    "image",
+    "video",
+    "audio",
+    "ptt",
+    "document",
+    "location",
+    "sticker",
+    "vcard",
+    "multi_vcard",
+  ]);
+
   client.on("message_create", (msg: Message) => {
-    if (!msg.fromMe) return;
+    if (!msg.fromMe || !REAL_MESSAGE_TYPES.has(msg.type)) return;
     const chatId = msg.id.remote;
     if (chatId.includes("@g.us") || chatId === "status@broadcast") return;
 
     if (consumeIfBotReply(chatId, msg.body)) return;
 
     pauseBotForChat(chatId);
-    logInfo(`Маман ${chatId} чатына өзі жауап берді, бот уақытша тоқтатылды`);
+    logInfo(`Маман ${chatId} чатына өзі жауап берді (type=${msg.type}), бот уақытша тоқтатылды`);
   });
 
   client.on("message", async (msg: Message) => {
