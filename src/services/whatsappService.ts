@@ -46,6 +46,13 @@ export function startWhatsAppClient(): void {
     logInfo(`Код байланыстыру (WhatsApp → Байланысу коды арқылы құрылғы қосу): ${code}`);
   });
 
+  // WhatsApp Web сессиясын қалпына келтіру кейде бірнеше минутқа созылады
+  // (WhatsApp серверлерінің синхрондалу баяулауы) — диагностика үшін жүктелу
+  // барысын логтап отырамыз.
+  client.on("loading_screen", (percent, message) => {
+    logInfo(`WhatsApp Web жүктелуде: ${percent}% — ${message}`);
+  });
+
   client.on("ready", () => {
     logInfo("Бот запущен и готов отвечать клиентам!");
     setReady();
