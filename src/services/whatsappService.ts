@@ -79,6 +79,11 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
 
   const isVoiceMessage = contentType === "audioMessage" && Boolean(content?.audioMessage?.ptt);
   logInfo(`Получено сообщение от ${chatId}: type=${contentType ?? "unknown"} body="${extractText(content) ?? ""}"`);
+  if (!contentType) {
+    logInfo(
+      `Диагностика: messageStubType=${msg.messageStubType ?? "none"} message=${JSON.stringify(msg.message)}`
+    );
+  }
 
   if (isBotPausedForChat(chatId)) {
     logInfo(`Бот ${chatId} үшін тоқтатылған, хабарлама өткізіп жіберілді`);
@@ -121,7 +126,7 @@ export async function startWhatsAppClient(): Promise<void> {
 
   const sock = makeWASocket({
     auth: state,
-    logger: pino({ level: "silent" }),
+    logger: pino({ level: "warn" }),
     browser: ["Aeroclimate", "Chrome", "1.0.0"],
   });
 
