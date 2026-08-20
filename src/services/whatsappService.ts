@@ -123,7 +123,7 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
 export async function startWhatsAppClient(): Promise<void> {
   const logger = pino({ level: "warn" });
   const { state, saveCreds } = await useMultiFileAuthState(
-    path.join(env.storageDir, "baileys_auth")
+    path.join(env.storageDir, "baileys_auth_v7")
   );
 
   const sock = makeWASocket({

@@ -14,7 +14,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@google/genai": "^2.13.0",
-    "baileys": "^6.7.24",
+    "baileys": "^7.0.0-rc14",
     "dotenv": "^16.4.5",
     "pino": "^9.14.0",
     "qrcode": "^1.5.4",

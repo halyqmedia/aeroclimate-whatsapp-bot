@@ -5,6 +5,7 @@ logs/
 .wwebjs_auth/
 .wwebjs_cache/
 baileys_auth/
+baileys_auth_v7/
 conversations.json
 bookings.json
 qr.png
