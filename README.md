@@ -13,7 +13,7 @@ Router → Cache → Claude тізбегі, қысқартылған конте�
 - **Rate limit** — 1 пайдаланушы 30 секундта 10-нан көп сұрау жіберсе, күте тұруды сұрайды
 - **Token/Cost logging** — әр Claude сұранысынан кейін input/output токен және $ баға логталады (`logs/requests.log`)
 - **Provider interface** — Gemini қазір қосулы (Claude/OpenAI да интерфейс арқылы қолжетімді)
-- WhatsApp қосылымы (QR), дауыстық хабарламаны Whisper арқылы тану, буки (тапсырыс) сақтау — бұрынғы MVP-дегідей сақталды
+- WhatsApp қосылымы (Baileys, QR), дауыстық хабарламаны Gemini арқылы тану, буки (тапсырыс) сақтау
 
 ## Неге "Сәлем" Router-де жоқ
 
@@ -36,7 +36,7 @@ Router → Cache → Claude тізбегі, қысқартылған конте�
 
 ```bash
 npm install
-cp .env.example .env   # GEMINI_API_KEY, OPENAI_API_KEY (Whisper үшін) толтырыңыз
+cp .env.example .env   # GEMINI_API_KEY толтырыңыз (чат үшін де, дауыстық хабарлама тану үшін де)
 npm run build
 npm start
 ```
@@ -51,9 +51,8 @@ npm run dev
 
 | Айнымалы | Сипаттама | Әдепкі |
 |---|---|---|
-| `GEMINI_API_KEY` | Gemini API кілті (AI_PROVIDER=gemini кезінде міндетті) | — |
+| `GEMINI_API_KEY` | Gemini API кілті — AI_PROVIDER=gemini кезінде чат үшін міндетті, дауыстық хабарлама тану үшін әрқашан керек | — |
 | `ANTHROPIC_API_KEY` | Claude API кілті (AI_PROVIDER=claude кезінде міндетті) | — |
-| `OPENAI_API_KEY` | Whisper (дауыстық хабарлама) үшін әрқашан керек | — |
 | `AI_PROVIDER` | `gemini` \| `claude` \| `openai` | `gemini` |
 | `MODEL` | Таңдалған провайдердің моделі | `gemini-2.5-flash` |
 | `MAX_TOKENS` | Жауаптың максимал ұзындығы | `500` |
