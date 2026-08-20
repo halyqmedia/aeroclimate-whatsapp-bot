@@ -4,6 +4,8 @@ logs/
 .env
 .wwebjs_auth/
 .wwebjs_cache/
+baileys_auth/
+conversations.json
 bookings.json
 qr.png
 debug.png

@@ -1,7 +1,19 @@
 import path from "path";
-import { Client, LocalAuth, Message } from "whatsapp-web.js";
+import { Boom } from "@hapi/boom";
+import pino from "pino";
 import qrcodeTerminal from "qrcode-terminal";
 import QRCode from "qrcode";
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  downloadMediaMessage,
+  getContentType,
+  normalizeMessageContent,
+  isJidGroup,
+  isJidStatusBroadcast,
+  WAMessage,
+  WASocket,
+} from "baileys";
 import { transcribeVoiceMessage } from "./transcriptionService";
 import { handleIncomingMessage } from "./messageService";
 import { logInfo, logError } from "../utils/logger";
@@ -22,124 +34,143 @@ const ERROR_REPLY =
   "Извините, у меня небольшая техническая заминка. Менеджер скоро свяжется с вами напрямую 🙏\n" +
   "Кешіріңіз, шағын техникалық ақау болды. Менеджер жақын арада сізбен тікелей байланысады 🙏";
 
-export function startWhatsAppClient(): void {
-  const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: path.join(env.storageDir, ".wwebjs_auth") }),
-    puppeteer: {
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    },
-    ...(env.whatsappPhoneNumber
-      ? { pairWithPhoneNumber: { phoneNumber: env.whatsappPhoneNumber, showNotification: true } }
-      : {}),
-  });
+// Маман WhatsApp-тан жауап жазғанын анықтау үшін тек нақты жазылған хабарлама
+// түрлеріне ғана қараймыз — жүйелік/шаблон түрлерін (протокол, кілт тарату
+// және т.б.) елемейміз, олар адам жазбаса да fromMe болып келуі мүмкін
+// (мыс. жарнамадан келген жаңа лидтерде) және ботты себепсіз тоқтатып тастайды.
+const REAL_CONTENT_TYPES = new Set([
+  "conversation",
+  "extendedTextMessage",
+  "imageMessage",
+  "videoMessage",
+  "audioMessage",
+  "documentMessage",
+  "stickerMessage",
+  "locationMessage",
+  "contactMessage",
+  "contactsArrayMessage",
+]);
 
-  client.on("qr", async (qr) => {
-    logInfo("Отсканируйте этот QR-код в WhatsApp (Связанные устройства):");
-    qrcodeTerminal.generate(qr, { small: true });
-    await QRCode.toFile(path.join(env.storageDir, "qr.png"), qr);
-    logInfo("QR-код также сохранён как qr.png");
-    setLatestQr(qr);
-  });
+function extractText(content: ReturnType<typeof normalizeMessageContent>): string | undefined {
+  return content?.conversation ?? content?.extendedTextMessage?.text ?? undefined;
+}
 
-  client.on("code", (code) => {
-    logInfo(`Код байланыстыру (WhatsApp → Байланысу коды арқылы құрылғы қосу): ${code}`);
-  });
+async function sendReply(sock: WASocket, chatId: string, text: string, quoted: WAMessage): Promise<void> {
+  markBotIsReplying(chatId, text);
+  await sock.sendMessage(chatId, { text }, { quoted });
+}
 
-  // WhatsApp Web сессиясын қалпына келтіру кейде бірнеше минутқа созылады
-  // (WhatsApp серверлерінің синхрондалу баяулауы) — диагностика үшін жүктелу
-  // барысын логтап отырамыз.
-  client.on("loading_screen", (percent, message) => {
-    logInfo(`WhatsApp Web жүктелуде: ${percent}% — ${message}`);
-  });
+async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
+  const chatId = msg.key.remoteJid;
+  if (!chatId || isJidGroup(chatId) || isJidStatusBroadcast(chatId)) return;
 
-  client.on("ready", () => {
-    logInfo("Бот запущен и готов отвечать клиентам!");
-    setReady();
-  });
+  const content = normalizeMessageContent(msg.message);
+  const contentType = getContentType(content ?? undefined);
 
-  client.on("disconnected", (reason) => {
-    logError("WhatsApp-сессия отключена", reason);
-    setDisconnected();
-  });
+  if (msg.key.fromMe) {
+    if (!contentType || !REAL_CONTENT_TYPES.has(contentType)) return;
 
-  client.on("auth_failure", (msg) => {
-    logError("Ошибка авторизации WhatsApp", msg);
-  });
-
-  // Маман өзі WhatsApp-тан жауап жазса (fromMe, боттың өз хабарламасы емес),
-  // сол чат үшін ботты уақытша тоқтатамыз — клиентпен маман тікелей сөйлесіп жатыр.
-  // Тек нақты жазылған хабарлама түрлеріне ғана қараймыз: жарнамадан (Facebook/
-  // Instagram) келген жаңа лидтерде WhatsApp өзі notification_template/protocol
-  // сияқты жүйелік хабарламаны fromMe=true етіп белгілейді — бұл адам жазған
-  // хабарлама емес, сондықтан ескермейміз (әйтпесе бот жаңа лидке бір рет те
-  // жауап бермей тұрып өзін-өзі тоқтатып тастайды).
-  const REAL_MESSAGE_TYPES = new Set([
-    "chat",
-    "image",
-    "video",
-    "audio",
-    "ptt",
-    "document",
-    "location",
-    "sticker",
-    "vcard",
-    "multi_vcard",
-  ]);
-
-  client.on("message_create", (msg: Message) => {
-    if (!msg.fromMe || !REAL_MESSAGE_TYPES.has(msg.type)) return;
-    const chatId = msg.id.remote;
-    if (chatId.includes("@g.us") || chatId === "status@broadcast") return;
-
-    if (consumeIfBotReply(chatId, msg.body)) return;
+    if (consumeIfBotReply(chatId, extractText(content) ?? "")) return;
 
     pauseBotForChat(chatId);
-    logInfo(`Маман ${chatId} чатына өзі жауап берді (type=${msg.type}), бот уақытша тоқтатылды`);
-  });
+    logInfo(`Маман ${chatId} чатына өзі жауап берді (type=${contentType}), бот уақытша тоқтатылды`);
+    return;
+  }
 
-  client.on("message", async (msg: Message) => {
-    logInfo(`Получено сообщение от ${msg.from}: type=${msg.type} body="${msg.body}"`);
-    if (msg.from.includes("@g.us") || msg.from === "status@broadcast") return;
+  const isVoiceMessage = contentType === "audioMessage" && Boolean(content?.audioMessage?.ptt);
+  logInfo(`Получено сообщение от ${chatId}: type=${contentType ?? "unknown"} body="${extractText(content) ?? ""}"`);
 
-    if (isBotPausedForChat(msg.from)) {
-      logInfo(`Бот ${msg.from} үшін тоқтатылған, хабарлама өткізіп жіберілді`);
-      return;
-    }
+  if (isBotPausedForChat(chatId)) {
+    logInfo(`Бот ${chatId} үшін тоқтатылған, хабарлама өткізіп жіберілді`);
+    return;
+  }
 
-    const isVoiceMessage = msg.hasMedia && (msg.type === "ptt" || msg.type === "audio");
-    if (!msg.body && !isVoiceMessage) return;
+  let userText = extractText(content);
+  if (!userText && !isVoiceMessage) return;
 
-    try {
-      let userText = msg.body;
-
-      if (isVoiceMessage) {
-        let media;
-        try {
-          media = await msg.downloadMedia();
-        } catch (error) {
-          logError("Не удалось скачать голосовое сообщение", error);
-        }
-        if (!media) {
-          markBotIsReplying(msg.from, VOICE_DOWNLOAD_FAILED_REPLY);
-          await msg.reply(VOICE_DOWNLOAD_FAILED_REPLY);
-          return;
-        }
-        userText = await transcribeVoiceMessage(media);
-        logInfo(`Голосовое сообщение распознано: "${userText}"`);
+  try {
+    if (isVoiceMessage) {
+      let audio: Buffer | undefined;
+      try {
+        audio = await downloadMediaMessage(msg, "buffer", {});
+      } catch (error) {
+        logError("Не удалось скачать голосовое сообщение", error);
       }
+      if (!audio) {
+        await sendReply(sock, chatId, VOICE_DOWNLOAD_FAILED_REPLY, msg);
+        return;
+      }
+      userText = await transcribeVoiceMessage(audio, content?.audioMessage?.mimetype ?? "audio/ogg");
+      logInfo(`Голосовое сообщение распознано: "${userText}"`);
+    }
 
-      if (!userText) return;
+    if (!userText) return;
 
-      const reply = await handleIncomingMessage(msg.from, userText);
-      markBotIsReplying(msg.from, reply);
-      await msg.reply(reply);
+    const reply = await handleIncomingMessage(chatId, userText);
+    await sendReply(sock, chatId, reply, msg);
+  } catch (error) {
+    logError("Ошибка обработки сообщения", error);
+    await sendReply(sock, chatId, ERROR_REPLY, msg);
+  }
+}
+
+export async function startWhatsAppClient(): Promise<void> {
+  const { state, saveCreds } = await useMultiFileAuthState(
+    path.join(env.storageDir, "baileys_auth")
+  );
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: "silent" }),
+    browser: ["Aeroclimate", "Chrome", "1.0.0"],
+  });
+
+  if (env.whatsappPhoneNumber && !sock.authState.creds.registered) {
+    try {
+      const code = await sock.requestPairingCode(env.whatsappPhoneNumber);
+      logInfo(`Код байланыстыру (WhatsApp → Байланысу коды арқылы құрылғы қосу): ${code}`);
     } catch (error) {
-      logError("Ошибка обработки сообщения", error);
-      markBotIsReplying(msg.from, ERROR_REPLY);
-      await msg.reply(ERROR_REPLY);
+      logError("Байланыстыру кодын алу мүмкін болмады", error);
+    }
+  }
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr && !env.whatsappPhoneNumber) {
+      logInfo("Отсканируйте этот QR-код в WhatsApp (Связанные устройства):");
+      qrcodeTerminal.generate(qr, { small: true });
+      await QRCode.toFile(path.join(env.storageDir, "qr.png"), qr);
+      logInfo("QR-код также сохранён как qr.png");
+      setLatestQr(qr);
+    }
+
+    if (connection === "open") {
+      logInfo("Бот запущен и готов отвечать клиентам!");
+      setReady();
+    }
+
+    if (connection === "close") {
+      const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode;
+      const loggedOut = statusCode === DisconnectReason.loggedOut;
+      logError("WhatsApp-сессия отключена", lastDisconnect?.error);
+      setDisconnected();
+
+      if (!loggedOut) {
+        startWhatsAppClient().catch((error) => logError("Қайта қосылу кезінде қате", error));
+      } else {
+        logError("Сессия шықты (logged out) — қайта QR сканерлеу керек", undefined);
+      }
     }
   });
 
-  client.initialize().catch((error) => logError("initialize() упал с ошибкой", error));
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      handleMessage(sock, msg).catch((error) => logError("Ошибка обработки сообщения", error));
+    }
+  });
 }
