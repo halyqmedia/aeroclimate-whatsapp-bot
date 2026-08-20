@@ -5,6 +5,7 @@ import qrcodeTerminal from "qrcode-terminal";
 import QRCode from "qrcode";
 import makeWASocket, {
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   DisconnectReason,
   downloadMediaMessage,
   getContentType,
@@ -120,13 +121,20 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
 }
 
 export async function startWhatsAppClient(): Promise<void> {
+  const logger = pino({ level: "warn" });
   const { state, saveCreds } = await useMultiFileAuthState(
     path.join(env.storageDir, "baileys_auth")
   );
 
   const sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: "warn" }),
+    auth: {
+      creds: state.creds,
+      // Signal сессияларын жедел жадта кэштейді — файлдан тек оқитын дүкенмен
+      // шифрды шешу кейде сәтсіз аяқталады (кілттерге қатарынан жедел қатынас
+      // қажет болғанда), CIPHERTEXT stub ретінде көрінеді.
+      keys: makeCacheableSignalKeyStore(state.keys, logger),
+    },
+    logger,
     browser: ["Aeroclimate", "Chrome", "1.0.0"],
   });
 
