@@ -16,6 +16,7 @@ import makeWASocket, {
   WASocket,
 } from "baileys";
 import { transcribeVoiceMessage } from "./transcriptionService";
+import { analyzeProjectFile } from "./mediaService";
 import { handleIncomingMessage } from "./messageService";
 import { logInfo, logError } from "../utils/logger";
 import { env } from "../config/env";
@@ -30,6 +31,16 @@ import {
 const VOICE_DOWNLOAD_FAILED_REPLY =
   "Извините, не удалось скачать голосовое сообщение, напишите, пожалуйста, текстом 🙏\n" +
   "Кешіріңіз, дауыстық хабарламаны жүктей алмадым, жазбаша жазып жіберіңізші 🙏";
+
+const MEDIA_DOWNLOAD_FAILED_REPLY =
+  "Извините, не удалось загрузить файл, отправьте, пожалуйста, ещё раз 🙏\n" +
+  "Кешіріңіз, файлды жүктей алмадым, қайта жіберіп жіберіңізші 🙏";
+
+const MEDIA_LABEL_BY_TYPE: Record<string, string> = {
+  imageMessage: "фото",
+  videoMessage: "видео",
+  documentMessage: "құжат/жоба",
+};
 
 const ERROR_REPLY =
   "Извините, у меня небольшая техническая заминка. Менеджер скоро свяжется с вами напрямую 🙏\n" +
@@ -56,9 +67,47 @@ function extractText(content: ReturnType<typeof normalizeMessageContent>): strin
   return content?.conversation ?? content?.extendedTextMessage?.text ?? undefined;
 }
 
+function extractMediaInfo(
+  content: ReturnType<typeof normalizeMessageContent>,
+  contentType: string
+): { mimetype?: string; caption?: string } {
+  switch (contentType) {
+    case "imageMessage":
+      return {
+        mimetype: content?.imageMessage?.mimetype ?? undefined,
+        caption: content?.imageMessage?.caption ?? undefined,
+      };
+    case "videoMessage":
+      return {
+        mimetype: content?.videoMessage?.mimetype ?? undefined,
+        caption: content?.videoMessage?.caption ?? undefined,
+      };
+    case "documentMessage":
+      return {
+        mimetype: content?.documentMessage?.mimetype ?? undefined,
+        caption: content?.documentMessage?.caption ?? undefined,
+      };
+    default:
+      return {};
+  }
+}
+
 async function sendReply(sock: WASocket, chatId: string, text: string, quoted: WAMessage): Promise<void> {
   markBotIsReplying(chatId, text);
   await sock.sendMessage(chatId, { text }, { quoted });
+}
+
+// Кәсіп иесіне (Ербол мырза) критикалық сәтте — клиент барлық дерек беріп, жазылым
+// расталғанда — хабарлау. Клиентпен диалогтан бөлек әрекет болғандықтан, бұл жерде
+// қате шықса да клиентке жауап беру процесі үзілмейді.
+async function notifyOwner(sock: WASocket, text: string): Promise<void> {
+  if (!env.ownerWhatsappNumber) return;
+  const ownerJid = `${env.ownerWhatsappNumber}@s.whatsapp.net`;
+  try {
+    await sock.sendMessage(ownerJid, { text });
+  } catch (error) {
+    logError("Кәсіп иесіне хабарлау мүмкін болмады", error);
+  }
 }
 
 async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
@@ -79,6 +128,7 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
   }
 
   const isVoiceMessage = contentType === "audioMessage" && Boolean(content?.audioMessage?.ptt);
+  const isMediaMessage = Boolean(contentType && MEDIA_LABEL_BY_TYPE[contentType]);
   logInfo(`Получено сообщение от ${chatId}: type=${contentType ?? "unknown"} body="${extractText(content) ?? ""}"`);
   if (!contentType) {
     logInfo(
@@ -92,7 +142,7 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
   }
 
   let userText = extractText(content);
-  if (!userText && !isVoiceMessage) return;
+  if (!userText && !isVoiceMessage && !isMediaMessage) return;
 
   try {
     if (isVoiceMessage) {
@@ -108,12 +158,46 @@ async function handleMessage(sock: WASocket, msg: WAMessage): Promise<void> {
       }
       userText = await transcribeVoiceMessage(audio, content?.audioMessage?.mimetype ?? "audio/ogg");
       logInfo(`Голосовое сообщение распознано: "${userText}"`);
+    } else if (isMediaMessage && contentType) {
+      let mediaBuffer: Buffer | undefined;
+      try {
+        mediaBuffer = await downloadMediaMessage(msg, "buffer", {});
+      } catch (error) {
+        logError("Не удалось скачать файл клиента", error);
+      }
+      if (!mediaBuffer) {
+        await sendReply(sock, chatId, MEDIA_DOWNLOAD_FAILED_REPLY, msg);
+        return;
+      }
+
+      const { mimetype, caption } = extractMediaInfo(content, contentType);
+      const label = MEDIA_LABEL_BY_TYPE[contentType];
+
+      let analysis = "";
+      try {
+        analysis = await analyzeProjectFile(mediaBuffer, mimetype ?? "application/octet-stream");
+      } catch (error) {
+        logError("Не удалось проанализировать файл клиента", error);
+      }
+      logInfo(`Файл клиента (${label}) проанализирован: "${analysis}"`);
+
+      const parts: string[] = [];
+      if (caption) parts.push(caption);
+      parts.push(
+        analysis
+          ? `[Жүйе: клиент ${label} жіберді. Файлдан алынған мәлімет: ${analysis}]`
+          : `[Жүйе: клиент ${label} жіберді, бірақ мазмұнын автоматты түрде оқу мүмкін болмады.]`
+      );
+      userText = parts.join("\n");
     }
 
     if (!userText) return;
 
-    const reply = await handleIncomingMessage(chatId, userText);
-    await sendReply(sock, chatId, reply, msg);
+    const result = await handleIncomingMessage(chatId, userText);
+    await sendReply(sock, chatId, result.reply, msg);
+    if (result.ownerNotification) {
+      await notifyOwner(sock, result.ownerNotification);
+    }
   } catch (error) {
     logError("Ошибка обработки сообщения", error);
     await sendReply(sock, chatId, ERROR_REPLY, msg);

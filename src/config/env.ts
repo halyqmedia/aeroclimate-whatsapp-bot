@@ -37,6 +37,9 @@ export const env = {
   storageDir: process.env.STORAGE_DIR ?? path.join(__dirname, "..", ".."),
   whatsappPhoneNumber: process.env.WHATSAPP_PHONE_NUMBER ?? "",
   webQrSecret: process.env.WEB_QR_SECRET ?? "",
+  // Ербол мырза — кәсіп иесі, критикалық сәтте (клиент барлық дерек беріп, жазылым
+  // расталғанда) осы нөмірге WhatsApp арқылы автоматты хабарлама жіберіледі.
+  ownerWhatsappNumber: process.env.OWNER_WHATSAPP_NUMBER ?? "77079871125",
   agentPauseMs: Number(process.env.AGENT_PAUSE_HOURS ?? 2) * 60 * 60 * 1000,
 };
 

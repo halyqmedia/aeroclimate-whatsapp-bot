@@ -12,6 +12,7 @@ import { isRateLimited } from "./rateLimiterService";
 import { env } from "../config/env";
 
 const BOOKING_MARKER = "ЗАПИСЬ_ПОДТВЕРЖДЕНА";
+const ATTENTION_MARKER = "НАЗАР_КЕРЕК";
 const RATE_LIMIT_REPLY = "Бір сәт күте тұрыңыз.";
 const ERROR_REPLY =
   "Извините, у меня небольшая техническая заминка. Менеджер скоро свяжется с вами напрямую 🙏\n" +
@@ -70,16 +71,53 @@ function buildAiMessages(chatId: string, userText: string) {
   return messages;
 }
 
-export async function handleIncomingMessage(chatId: string, userText: string): Promise<string> {
+// Клиенттің нөмірін chatId-ден (77071234567@s.whatsapp.net) адам оқитын түрге түрлендіреді.
+function formatContact(chatId: string): string {
+  return `+${chatId.replace(/@.*$/, "")}`;
+}
+
+// Критикалық сәттер — 1) клиент барлық керек дерегін беріп, AI жазылымды растаған кез,
+// 2) клиент ашуланған/шағымданған/күрделі жағдай туған кез (назар аудару міндетті).
+// Екі жағдайда да кәсіп иесіне толық контекст (қысқаша қорытынды + соңғы хабарламалар)
+// бірден жіберіледі, сол арқылы клиент күтіп отырған кезде хабарлама артынан қалып қоймайды.
+function buildOwnerNotification(
+  chatId: string,
+  closingMessage: string,
+  summary: string,
+  recent: ChatMessage[],
+  urgent: boolean
+): string {
+  const header = urgent
+    ? `⚠️ НАЗАР АУДАРЫҢЫЗ! Клиент ашуланды/шағымданды: ${formatContact(chatId)}`
+    : `🔔 Жаңа лид! Клиент: ${formatContact(chatId)}`;
+  const parts = [header];
+  if (summary) parts.push(`Қысқаша: ${summary}`);
+  const transcript = recent
+    .map((m) => `${m.role === "user" ? "Клиент" : "Бот"}: ${m.content}`)
+    .join("\n");
+  if (transcript) parts.push(`Диалог:\n${transcript}`);
+  parts.push(`Қорытынды: ${closingMessage}`);
+  return parts.join("\n\n");
+}
+
+export interface IncomingMessageResult {
+  reply: string;
+  ownerNotification?: string;
+}
+
+export async function handleIncomingMessage(
+  chatId: string,
+  userText: string
+): Promise<IncomingMessageResult> {
   if (isRateLimited(chatId)) {
-    return RATE_LIMIT_REPLY;
+    return { reply: RATE_LIMIT_REPLY };
   }
 
   // 1. Router — простые категории без обращения к AI-провайдеру
   const routed = routeMessage(userText);
   if (routed) {
     await memory.addTurn(chatId, userText, routed.answer);
-    return routed.answer;
+    return { reply: routed.answer };
   }
 
   // 2. Осы диалогтағы тура қайталама сұрақ — бұрынғы жауапты қайталаймыз
@@ -87,7 +125,7 @@ export async function handleIncomingMessage(chatId: string, userText: string): P
   const repeated = findRepeatedAnswer(recent, userText);
   if (repeated) {
     await memory.addTurn(chatId, userText, repeated);
-    return repeated;
+    return { reply: repeated };
   }
 
   // 3. Кэш — если такой же вопрос уже задавали в начале диалога
@@ -96,7 +134,7 @@ export async function handleIncomingMessage(chatId: string, userText: string): P
     const cached = await cache.get(cacheKey);
     if (cached) {
       await memory.addTurn(chatId, userText, cached);
-      return cached;
+      return { reply: cached };
     }
   }
 
@@ -122,8 +160,12 @@ export async function handleIncomingMessage(chatId: string, userText: string): P
     });
 
     let finalReply = result.text;
-    if (finalReply.includes(BOOKING_MARKER)) {
-      finalReply = finalReply.replace(BOOKING_MARKER, "").trim();
+    const isBookingConfirmed = finalReply.includes(BOOKING_MARKER);
+    const needsAttention = finalReply.includes(ATTENTION_MARKER);
+    if (isBookingConfirmed || needsAttention) {
+      finalReply = finalReply.replace(BOOKING_MARKER, "").replace(ATTENTION_MARKER, "").trim();
+    }
+    if (isBookingConfirmed) {
       saveBooking(chatId, finalReply);
     }
 
@@ -132,9 +174,21 @@ export async function handleIncomingMessage(chatId: string, userText: string): P
       await cache.set(cacheKey, finalReply, env.cacheTtlSeconds);
     }
 
-    return finalReply;
+    let ownerNotification: string | undefined;
+    if (isBookingConfirmed || needsAttention) {
+      const updatedContext = memory.getContext(chatId);
+      ownerNotification = buildOwnerNotification(
+        chatId,
+        finalReply,
+        updatedContext.summary,
+        updatedContext.recent,
+        needsAttention
+      );
+    }
+
+    return { reply: finalReply, ownerNotification };
   } catch (error) {
     logError("Ошибка обращения к AI-провайдеру", error);
-    return ERROR_REPLY;
+    return { reply: ERROR_REPLY };
   }
 }
