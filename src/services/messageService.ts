@@ -88,9 +88,10 @@ function buildOwnerNotification(
   urgent: boolean
 ): string {
   const header = urgent
-    ? `⚠️ НАЗАР АУДАРЫҢЫЗ! Клиент ашуланды/шағымданды: ${formatContact(chatId)}`
-    : `🔔 Жаңа лид! Клиент: ${formatContact(chatId)}`;
-  const parts = [header];
+    ? "⚠️ НАЗАР АУДАРЫҢЫЗ! Клиент ашуланды/шағымданды"
+    : "🔔 Жаңа лид!";
+  const waLink = `https://wa.me/${chatId.replace(/@.*$/, "")}`;
+  const parts = [header, `Клиент нөмірі: ${formatContact(chatId)} (${waLink})`];
   if (summary) parts.push(`Қысқаша: ${summary}`);
   const transcript = recent
     .map((m) => `${m.role === "user" ? "Клиент" : "Бот"}: ${m.content}`)
