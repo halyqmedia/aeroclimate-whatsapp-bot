@@ -40,6 +40,25 @@ async function summarizeOldMessages(
 const aiProvider: AiProvider = createAiProvider();
 const memory = new ConversationMemory(summarizeOldMessages);
 
+// AI-жауаптағы БОЛУ_МАРКЕР/НАЗАР_КЕРЕК жады тарихынан алынып тасталатындықтан (клиентке
+// көрсетілмейді), AI бұрын растап қойғанын "есіне түсіре" алмайды — сол себепті бір
+// клиент кезектес хабарламалар/фото-альбом жіберсе, маркер бірнеше рет қайталанып шығуы
+// мүмкін. Осыны кодта бөгейміз: бір чат үшін бір маркер түрі белгілі бір терезеде тек
+// бір рет ғана кәсіп иесіне хабарлауға және сақтауға әкеледі.
+const NOTIFICATION_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
+const recentNotificationAt = new Map<string, number>();
+
+function shouldNotifyOnce(kind: "booking" | "attention", chatId: string): boolean {
+  const key = `${kind}:${chatId}`;
+  const now = Date.now();
+  const last = recentNotificationAt.get(key);
+  if (last !== undefined && now - last < NOTIFICATION_DEDUPE_WINDOW_MS) {
+    return false;
+  }
+  recentNotificationAt.set(key, now);
+  return true;
+}
+
 // Пайдаланушы осы диалогта дәл сол сұрақты бұрын қойған ба — солай болса,
 // AI-ды қайта шақырмай, бұрынғы жауапты қайтарамыз (тек осы chatId ішінде
 // ізделеді, сондықтан басқа клиенттің аты/қаласы кездейсоқ ағып кетпейді).
@@ -166,7 +185,9 @@ export async function handleIncomingMessage(
     if (isBookingConfirmed || needsAttention) {
       finalReply = finalReply.replace(BOOKING_MARKER, "").replace(ATTENTION_MARKER, "").trim();
     }
-    if (isBookingConfirmed) {
+
+    const shouldSaveBooking = isBookingConfirmed && shouldNotifyOnce("booking", chatId);
+    if (shouldSaveBooking) {
       saveBooking(chatId, finalReply);
     }
 
@@ -175,15 +196,16 @@ export async function handleIncomingMessage(
       await cache.set(cacheKey, finalReply, env.cacheTtlSeconds);
     }
 
+    const shouldNotifyAttention = needsAttention && shouldNotifyOnce("attention", chatId);
     let ownerNotification: string | undefined;
-    if (isBookingConfirmed || needsAttention) {
+    if (shouldSaveBooking || shouldNotifyAttention) {
       const updatedContext = memory.getContext(chatId);
       ownerNotification = buildOwnerNotification(
         chatId,
         finalReply,
         updatedContext.summary,
         updatedContext.recent,
-        needsAttention
+        shouldNotifyAttention
       );
     }
 
